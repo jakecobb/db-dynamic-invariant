@@ -9,15 +9,18 @@ _DEFAULT_ARGS = {'host': 'localhost', 'db': 'world', 'user': 'world'}
 
 class Field(object):
 	"""Represents a database table field."""
-	def __init__(self, name, ftype, rtype=None, table=None):
+	def __init__(self, name, ftype, rtype=None, table=None, is_pkey=False):
 		self.table = table
 		self.name = name
 		self.ftype = 'dbfield/' + ftype
 		self.rtype = ftype_to_rep(ftype) if rtype is None else rtype
+		self.is_pkey = is_pkey
 		if self.rtype == 'java.lang.String':
 			self.to_val = to_str_val
 		else:
 			self.to_val = to_val
+			if is_pkey and self.rtype == 'int':
+				self.rtype = 'hashcode'
 	def fullname(self):
 		"""Returns the field name including the table, if known."""
 		if self.table:
@@ -27,11 +30,12 @@ class Field(object):
 		return self.to_old_decl()
 	def to_old_decl(self):
 		"""Returns Daikon variable declaration in the old format."""
-		return '\n'.join((self.fullname(), self.ftype, self.rtype, str(id(self))))
+		return '\n'.join((self.fullname(), self.ftype, self.rtype, '1'))
 
 def to_val(val):
 	if val is None:
-		return 'nonsensical'
+		#return 'nonsensical'
+		return '0' # FIXME 'null', 'nonsensical' fail in simple format
 	return val
 def to_str_val(val):
 	if val is None:
@@ -59,51 +63,29 @@ def convert(outfile, conn_args):
 		if conn:
 			conn.close()
 
-def convert_simple(outfile, decls):
-	with open(outfile, 'wb') as out:
-		out.write("DECLARE\n")
-		buf = []
-		for table, fields in decls.iteritems():
-			out.write("%s:::POINT\n" % table)
-			for fname, ftype, frep in fields:
-				out.write('\n'.join((fname, ftype, frep, '1', '\n')))
-			out.write("\n")
+def convert_simple(outfile, conn_args=None):
+	if conn_args is None: conn_args = _DEFAULT_ARGS
 
+	conn = None
+	try:
+		conn = MySQLdb.connect(**conn_args)
+		all_fields = get_table_fields(conn)
+		write_old_decls(all_fields, outfile + '.decls')
+		write_old_trace(conn, all_fields, outfile + '.dtrace')
+	finally:
+		if conn: conn.close()
 
 def get_table_names(conn):
-	tables = None
-
+	"""Retrieves the tables from given MySQL connection."""
 	cur = conn.cursor()
 	try:
 		cur.execute('SHOW TABLES')
-		tables = [ row[0] for row in cur ]
+		return [ row[0] for row in cur ]
 	finally:
 		cur.close()
-
-	return tables
-
-def table_decls(conn):
-	tables = get_table_names(conn)
-	
-	decls = {}
-	cur = conn.cursor()
-	try:
-		for table in tables:
-			cur.execute('DESCRIBE `%s`' % table)
-			fields = []
-			for row in cur:
-				fname, ftype = row[:2]
-				frep = ftype_to_rep(ftype)
-				finfo = (fname, ftype, frep)
-				fields.append(finfo)
-			decls[table] = fields
-	finally:
-		cur.close()
-
-	return decls
 
 _RE_STR = re.compile(r'(var)?char|enum')
-_RE_INT = re.compile(r'(big|small|medium)?int')
+_RE_INT = re.compile(r'(big|small|medium|tiny)?int')
 _RE_DBL = re.compile(r'float|decimal|double')
 def ftype_to_rep(ftype):
 	pindex = ftype.find('(')
@@ -129,9 +111,8 @@ def get_table_fields(conn):
 			cur.execute('DESCRIBE `%s`' % table)
 			tfields = []
 			for row in cur:
-				fname, ftype = row[:2]
-				tfields.append(Field(fname, ftype, table=table))
-			
+				fname, ftype, nullable, keytype = row[:4]
+				tfields.append(Field(fname, ftype, table=table, is_pkey=keytype=='PRI'))
 			fields[table] = tfields
 	finally:
 		cur.close()
