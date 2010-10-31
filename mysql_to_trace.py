@@ -39,8 +39,7 @@ class Field(object):
 
 def to_val(val):
 	if val is None:
-		#return 'nonsensical'
-		return '0' # FIXME 'null', 'nonsensical' fail in simple format
+		return 'nonsensical' # FIXME is nonsensiscal the same as null?
 	return val
 
 def to_str_val(val):
@@ -62,12 +61,12 @@ else:
 
 def to_bin_val(val):
 	if val is None:
-		return '[]' # FIXME
+		return 'nonsensical' # FIXME, represent null?
 	return "[%s]" % __to_bin_str(val)
 
 def to_set_val(val):
 	if not val:
-		return '[]' # FIXME
+		return 'nonsensical' # FIXME, represent null?
 	return '["%s"]' % '" "'.join( x.replace('"', '\\"') for x in val.split(',') )
 
 
@@ -166,7 +165,6 @@ def write_old_trace(conn, all_fields, outpath):
 		# header needed?
 		cur = conn.cursor()
 		try:
-			templ = '%s\n%s\n1\n'
 			for table, fields in all_fields.iteritems():
 				tbl_point = '\n%s:::POINT\n' % table
 				q = 'SELECT ' + ', '.join( f.fullname(True) for f in fields ) + \
@@ -176,7 +174,9 @@ def write_old_trace(conn, all_fields, outpath):
 					for row in cur:
 						out.write(tbl_point)
 						for i, field in enumerate(fields):
-							out.write( templ % (field.fullname(), field.to_val(row[i])) )
+							fval = field.to_val(row[i])
+							fmod = 1 if fval != 'nonsensical' else 2 
+							out.write( '%s\n%s\n%d\n' % (field.fullname(), fval, fmod) )
 				except MySQLdb.Error, e:
 					print >>sys.stderr, "Error %d: %s\nQuery: %s" % (e.args[0], e.args[1], q)
 					raise
