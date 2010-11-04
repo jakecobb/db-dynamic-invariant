@@ -25,17 +25,30 @@ class Field(object):
 			self.rtype = rtype
 		if is_pkey and self.rtype == 'int':
 			self.rtype = 'hashcode'
-	def fullname(self, quoted=False):
+	def fullname(self, quoted=False, escaped=False):
 		"""Returns the field name including the table, if known."""
 		p = (self.table, self.name) if self.table else (self.name,)
 		if quoted:
 			p = map(lambda x: "`%s`" % x, p)
+		if escaped:
+			p = map(lambda x: x.replace(' ', '_'))
 		return '.'.join(p)
 	def to_decl(self):
 		return self.to_old_decl()
 	def to_old_decl(self):
 		"""Returns Daikon variable declaration in the old format."""
 		return '\n'.join((self.fullname(), self.ftype, self.rtype, str(self.cmp)))
+	def to_decl_v2(self):
+		"""Returns Daikon variable declaration in the new (2.0) format."""
+		fullname = self.fullname(escaped=True)
+		array = 1 if self.rtype.contains('[') else 0
+		return """  variable %s
+    var-kind %s
+    dec-type %s
+    rep-type %s
+    array %d
+    comparability %s
+""" % (fullname, 'variable', self.ftype, self.rtype, array, self.cmp) 
 
 def to_val(val):
 	if val is None:
@@ -80,6 +93,16 @@ def convert_simple(outfile, **conn_args):
 	finally:
 		if conn: conn.close()
 
+def convert(outfile, **conn_args):
+	conn = None
+	try:
+		conn = MySQLdb.connect(**conn_args)
+		all_fields = get_table_fields(conn)
+		write_decls_v2(all_fields, outfile + '.decls')
+		write_old_trace(conn, all_fields, outfile + '.dtrace') # FIXME v2 trace
+	finally:
+		if conn: conn.close()
+
 def get_table_names(conn):
 	"""Retrieves the tables from given MySQL connection."""
 	cur = conn.cursor()
@@ -116,20 +139,20 @@ def ftype_to_rep_val_comp(ftype):
 	base_type = ftype if pindex == -1 else ftype[:pindex]
 	
 	if _RE_STR.match(base_type):
-		return ('java.lang.String', to_str_val, 1)
+		return ('java.lang.String', to_str_val, '1')
 	elif _RE_INT.match(base_type):
-		return ('int', to_val, 2)
+		return ('int', to_val, '2')
 	elif _RE_DBL.match(base_type):
-		return ('double', to_val, 3)
+		return ('double', to_val, '3')
 	elif _RE_BIN.match(base_type):
-		return ('int[]', to_bin_val, 4)
+		return ('int[]', to_bin_val, '4[2]')
 	elif _RE_SET.match(base_type):
-		return ('java.lang.String[]', to_set_val, 5)
+		return ('java.lang.String[]', to_set_val, '5[1]')
 	elif _RE_TIME.match(base_type):
-		return ('java.lang.String', to_str_val, 6)
+		return ('java.lang.String', to_str_val, '6')
 	else:
 		print >>sys.stderr, "Warn: Unhandled base type:", base_type
-		return ('java.lang.String', to_str_val, 1)
+		return ('java.lang.String', to_str_val, '1')
 	
 
 def get_table_fields(conn):
@@ -189,10 +212,11 @@ def write_decls_v2(all_fields, outpath):
 		out.write('decl-version 2.0\n' \
 			'input-language MySQL\n\n')
 		for table, fields in all_fields.iteritems():
-			out.write('ppt %s\n' % table)
-			out.write('\tppt-type point\n')
-			
-	pass
+			out.write('ppt ' + table + '\n')
+			out.write('ppt-type point\n')
+			for field in fields:
+				out.write(field.to_decl_v2())
+			out.write('\n')
 
 def process_world(declpath='world.decls', dtracepath='world.dtrace'):
 	convert_simple('world', **_DEFAULT_ARGS)
@@ -200,12 +224,17 @@ def process_world(declpath='world.decls', dtracepath='world.dtrace'):
 def main(args=None):
 	if args is None: args = sys.argv[1:]
 	try:
-		opts, args = getopt.gnu_getopt(args, "hH:u:p:P:d:o:",
-			("help", "host=", "user=", "port=", "password=", "database=", "output="))
+		opts, args = getopt.gnu_getopt(args, "hH:u:p:P:d:o:V:",
+			("help", "host=", "user=", "port=", "password=", "database=", "output=", "version="))
 	except getopt.GetoptError, err:
 		print >>sys.stderr, str(err)
 		return 1
+	
+	# defaults
 	output = args[0] if args else None
+	version = '1'
+	
+	# read options
 	cargs = {}
 	for o, a in opts:
 		if o in ('H', 'host'):
@@ -218,6 +247,10 @@ def main(args=None):
 			cargs['db'] = a
 		elif o in ('o', 'output'):
 			output = a
+		elif o in ('V', 'version'):
+			version = a
+			
+	# check options
 	if not output:
 		print >>sys.stderr, "No output specified."
 		return 1
@@ -225,7 +258,14 @@ def main(args=None):
 		cargs['user'] = output
 	if 'db' not in cargs:
 		cargs['db'] = output
-	convert_simple(output, **cargs)
+	if version not in ('1', '1.0', '2', '2.0'):
+		print >>sys.stderr, "Unrecognized version:", version
+		return 1
+	
+	if int(version) == 1:
+		convert_simple(output, **cargs)
+	else:
+		convert(output, **cargs)
 	return 0
 
 if __name__ == '__main__':
