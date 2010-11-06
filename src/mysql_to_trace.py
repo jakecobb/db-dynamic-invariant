@@ -8,6 +8,8 @@ import getopt
 from array import array
 from itertools import imap
 
+_verbose = 0
+
 _DEFAULT_ARGS = {'host': 'localhost', 'db': 'world', 'user': 'world'}
 def get_conn_args(**args):
 	"""Returns the given connection arguments with defaults for any not given."""
@@ -15,11 +17,16 @@ def get_conn_args(**args):
 
 class Field(object):
 	"""Represents a database table field."""
-	def __init__(self, name, ftype, rtype=None, table=None, is_pkey=False):
+	def __init__(self, name, ftype, rtype=None, table=None, is_pkey=False, nullable=True):
 		self.table = table
 		self.name = name
 		self.ftype = ftype
+		self.nullable = nullable
 		self.is_pkey = is_pkey
+		if is_pkey and nullable:
+			self.nullable = False
+			if _verbose:
+				print >>sys.stderr, "Dropping nullable for PK:", self.fullname()
 		self.rtype, self.to_val, self.cmp = ftype_to_rep_val_comp(ftype)
 		if rtype is not None: 
 			self.rtype = rtype
@@ -31,28 +38,48 @@ class Field(object):
 		if quoted:
 			p = map(lambda x: "`%s`" % x, p)
 		if escaped:
-			p = map(lambda x: x.replace(' ', '_'))
+			p = map(lambda x: x.replace(' ', '_'), p)
 		return '.'.join(p)
 	def to_decl(self):
 		return self.to_old_decl()
 	def to_old_decl(self):
 		"""Returns Daikon variable declaration in the old format."""
-		return '\n'.join((self.fullname(), self.ftype, self.rtype, str(self.cmp)))
+		return '\n'.join((self.fullname(escaped=True), self.ftype, self.rtype, str(self.cmp)))
 	def to_decl_v2(self):
 		"""Returns Daikon variable declaration in the new (2.0) format."""
 		fullname = self.fullname(escaped=True)
-		array = 1 if self.rtype.contains('[') else 0
-		return """  variable %s
-    var-kind %s
-    dec-type %s
-    rep-type %s
-    array %d
-    comparability %s
-""" % (fullname, 'variable', self.ftype, self.rtype, array, self.cmp) 
+		is_array = '[' in self.rtype
+		flags = 'non_null' if self.is_pkey else None
+		return var_decl_v2(fullname, self.rtype, dec_type=self.ftype.replace(' ', '_'), array=is_array, flags=flags, comp=self.cmp)
+	def _nullable_name(self, v1=False):
+#		if v1:
+			return self.fullname(escaped=True) + '__IS_NULL__'
+#		return 'NULL(' + self.fullname(escaped=True) + ')' 
+	def null_decl_v1(self):
+		if not self.nullable:
+			return ''
+		nname = self._nullable_name(v1=True)
+		return '\n'.join((nname, nname, 'hashcode', '8'))
+	def null_trace_v1(self, val):
+		if not self.nullable:
+			return ''
+		nname = self._nullable_name(v1=True)
+		return '\n'.join((nname, 'null' if val is None else str(id('')), '1')) # FIXME id('')???
+	def null_decl_v2(self):
+		if not self.nullable: return ''
+		nname = self._nullable_name(v1=False)
+		return var_decl_v2(nname, 'hashcode', dec_type=nname, comp='8')
+
+def var_decl_v2(variable, rep_type, dec_type='unspecified', var_kind='variable', flags=None, array=None, comp='1'):
+	data = ['  variable ' + variable, 'var-kind ' + var_kind, 'dec-type ' + dec_type, 'rep-type ' + rep_type]
+	if array: data.append('array 1')
+	if flags: data.append('flags ' + flags)
+	data.append('comparability ' + comp)
+	return '\n    '.join(data) + '\n'
 
 def to_val(val):
 	if val is None:
-		return 'nonsensical' # FIXME is nonsensiscal the same as null?
+		return 'nonsensical' # FIXME is nonsensical the same as null?
 	return val
 
 def to_str_val(val):
@@ -119,6 +146,7 @@ _RE_BIN = re.compile(r'blob', re.IGNORECASE)
 _RE_SET = re.compile(r'set', re.IGNORECASE)
 _RE_TIME = re.compile(r'datetime|timestamp', re.IGNORECASE)
 def ftype_to_rep(ftype):
+	raise DeprecationWarning
 	pindex = ftype.find('(')
 	base_type = ftype if pindex == -1 else ftype[:pindex]
 	
@@ -166,7 +194,7 @@ def get_table_fields(conn):
 			tfields = []
 			for row in cur:
 				fname, ftype, nullable, keytype = row[:4]
-				tfields.append(Field(fname, ftype, table=table, is_pkey=keytype=='PRI'))
+				tfields.append(Field(fname, ftype, table=table, is_pkey=keytype=='PRI', nullable=nullable))
 			fields[table] = tfields
 	finally:
 		cur.close()
@@ -179,8 +207,15 @@ def write_old_decls(all_fields, outpath):
 		for table, fields in all_fields.iteritems():
 			out.write('DECLARE\n%s:::POINT\n' % table)
 			for field in fields:
+				if field.nullable:
+					out.write('%s\n' % field.null_decl_v1())
 				out.write('%s\n' % field.to_old_decl())
 			out.write('\n')
+
+def nullable_decl_v1(field):
+	raise DeprecationWarning
+	fname = field.fullname(escaped=True)
+	return '\n'.join('NULL(' + fname + ')', fname + ' IS NULL', 'hashcode', '8')
 
 def write_old_trace(conn, all_fields, outpath):
 	"""Writes a data trace of the current database state"""
@@ -197,9 +232,13 @@ def write_old_trace(conn, all_fields, outpath):
 					for row in cur:
 						out.write(tbl_point)
 						for i, field in enumerate(fields):
-							fval = field.to_val(row[i])
+							val = row[i]
+							if field.nullable:
+								out.write(field.null_trace_v1(val))
+								out.write('\n')
+							fval = field.to_val(val)
 							fmod = 1 if fval != 'nonsensical' else 2 
-							out.write( '%s\n%s\n%d\n' % (field.fullname(), fval, fmod) )
+							out.write( '%s\n%s\n%d\n' % (field.fullname(escaped=True), fval, fmod) )
 				except MySQLdb.Error, e:
 					print >>sys.stderr, "Error %d: %s\nQuery: %s" % (e.args[0], e.args[1], q)
 					raise
@@ -212,9 +251,11 @@ def write_decls_v2(all_fields, outpath):
 		out.write('decl-version 2.0\n' \
 			'input-language MySQL\n\n')
 		for table, fields in all_fields.iteritems():
-			out.write('ppt ' + table + '\n')
+			out.write('ppt ' + table + ':::POINT\n')
 			out.write('ppt-type point\n')
 			for field in fields:
+				if field.nullable:
+					out.write(field.null_decl_v2())
 				out.write(field.to_decl_v2())
 			out.write('\n')
 
@@ -224,19 +265,21 @@ def process_world(declpath='world.decls', dtracepath='world.dtrace'):
 def main(args=None):
 	if args is None: args = sys.argv[1:]
 	try:
-		opts, args = getopt.gnu_getopt(args, "hH:u:p:P:d:o:V:",
-			("help", "host=", "user=", "port=", "password=", "database=", "output=", "version="))
+		opts, args = getopt.gnu_getopt(args, "hH:u:p:P:d:o:V:v",
+			("help", "host=", "user=", "port=", "password=", "database=", "output=", "version=", "verbose"))
 	except getopt.GetoptError, err:
 		print >>sys.stderr, str(err)
 		return 1
-	
+
 	# defaults
 	output = args[0] if args else None
-	version = '1'
+	version = '2'
+	verbose = 0
 	
 	# read options
 	cargs = {}
 	for o, a in opts:
+		o = o.lstrip('-')
 		if o in ('H', 'host'):
 			cargs['host'] = a
 		elif o in ('u', 'user'):
@@ -249,6 +292,8 @@ def main(args=None):
 			output = a
 		elif o in ('V', 'version'):
 			version = a
+		elif o in ('v', 'verbose'):
+			verbose += 1
 			
 	# check options
 	if not output:
@@ -262,6 +307,10 @@ def main(args=None):
 		print >>sys.stderr, "Unrecognized version:", version
 		return 1
 	
+	global _verbose
+	_verbose = verbose
+	if verbose:
+		print "Tracing '" + output + "' with version", version, "and args:\n" + repr(cargs)
 	if int(version) == 1:
 		convert_simple(output, **cargs)
 	else:
