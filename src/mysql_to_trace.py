@@ -5,15 +5,25 @@ import sys
 import re
 import MySQLdb
 import getopt
+import gzip
 from array import array
 from itertools import imap
 
 _verbose = 0
+_DEFAULT_COMPRESS = 3
 
 _DEFAULT_ARGS = {'host': 'localhost', 'db': 'world', 'user': 'world'}
 def get_conn_args(**args):
 	"""Returns the given connection arguments with defaults for any not given."""
 	return dict(_DEFAULT_ARGS).update(args)
+
+class GzipFile(gzip.GzipFile):
+	def __enter__(self):
+		if self.fileobj is None:
+			raise ValueError("I/O operation on closed GzipFile object")
+		return self
+	def __exit__(self, *args):
+		self.close()
 
 class Field(object):
 	"""Represents a database table field."""
@@ -119,23 +129,23 @@ def to_set_val(val):
 	return '["%s"]' % '" "'.join( x.replace('"', '\\"') for x in val.split(',') )
 
 
-def convert_simple(outfile, **conn_args):
+def convert_simple(outfile, use_gzip=True, compress=_DEFAULT_COMPRESS, **conn_args):
 	conn = None
 	try:
 		conn = MySQLdb.connect(**conn_args)
 		all_fields = get_table_fields(conn)
 		write_old_decls(all_fields, outfile + '.decls')
-		write_old_trace(conn, all_fields, outfile + '.dtrace')
+		write_old_trace(conn, all_fields, outfile + '.dtrace', use_gzip=use_gzip, compress=compress)
 	finally:
 		if conn: conn.close()
 
-def convert(outfile, **conn_args):
+def convert(outfile, use_gzip=True, compress=_DEFAULT_COMPRESS, **conn_args):
 	conn = None
 	try:
 		conn = MySQLdb.connect(**conn_args)
 		all_fields = get_table_fields(conn)
 		write_decls_v2(all_fields, outfile + '.decls')
-		write_old_trace(conn, all_fields, outfile + '.dtrace') # FIXME v2 trace
+		write_old_trace(conn, all_fields, outfile + '.dtrace', use_gzip=use_gzip, compress=compress) # FIXME v2 trace
 	finally:
 		if conn: conn.close()
 
@@ -226,28 +236,43 @@ def nullable_decl_v1(field):
 	fname = field.fullname(escaped=True)
 	return '\n'.join('NULL(' + fname + ')', fname + ' IS NULL', 'hashcode', '8')
 
-def write_old_trace(conn, all_fields, outpath):
+def write_old_trace(conn, all_fields, outpath, use_gzip=True, compress=_DEFAULT_COMPRESS):
 	"""Writes a data trace of the current database state"""
-	with open(outpath, 'w') as out:
-		# header needed?
+	if not use_gzip:
+		out = open(outpath, 'w')
+	else:
+		if not outpath.endswith('.gz'): 
+			outpath += '.gz'
+		out = GzipFile(outpath, 'wb', compress)
+	
+	# write the trace file
+	with out:
+		# build string pieces in a buffer to write once per db row
+		# saves a lot of time, especially with gzip on
+		buf = []
+		write = buf.append
+		def mwrite(*args): buf.extend(args)
+		
 		cur = conn.cursor()
 		try:
 			for table, fields in all_fields.iteritems():
 				tbl_point = '\n%s:::POINT\n' % table
-				q = 'SELECT ' + ', '.join( f.fullname(True) for f in fields ) + \
+				q = 'SELECT ' + ', '.join( f.fullname(quoted=True) for f in fields ) + \
 					' FROM `' + table + '`'
 				try:
 					cur.execute(q)
 					for row in cur:
-						out.write(tbl_point)
+						write(tbl_point)
 						for i, field in enumerate(fields):
 							val = row[i]
 							if field.nullable:
-								out.write(field.null_trace_v1(val))
-								out.write('\n')
-							fval = field.to_val(val)
-							fmod = 1 if fval != 'nonsensical' else 2 
-							out.write( '%s\n%s\n%d\n' % (field.fullname(escaped=True), fval, fmod) )
+								write(field.null_trace_v1(val))
+								write('\n')
+							fval = str(field.to_val(val))
+							fmod = '1' if fval != 'nonsensical' else '2' 
+							mwrite(field.fullname(escaped=True), '\n', fval, '\n', fmod, '\n')
+						out.write(''.join(buf))
+						del buf[:]
 				except MySQLdb.Error, e:
 					print >>sys.stderr, "Error %d: %s\nQuery: %s" % (e.args[0], e.args[1], q)
 					raise
@@ -274,8 +299,10 @@ def process_world(declpath='world.decls', dtracepath='world.dtrace'):
 def main(args=None):
 	if args is None: args = sys.argv[1:]
 	try:
-		opts, args = getopt.gnu_getopt(args, "hH:u:p:P:d:o:V:v",
-			("help", "host=", "user=", "port=", "password=", "database=", "output=", "version=", "verbose"))
+		opts, args = getopt.gnu_getopt(args, "hH:u:p:P:d:o:V:vc:",
+			("help", "host=", "user=", "port=", "password=", 
+				"database=", "output=", "version=", "verbose",
+				"no-gzip", "compress-level="))
 	except getopt.GetoptError, err:
 		print >>sys.stderr, str(err)
 		return 1
@@ -284,6 +311,8 @@ def main(args=None):
 	output = args[0] if args else None
 	version = '2'
 	verbose = 0
+	use_gzip = True
+	compress_level = _DEFAULT_COMPRESS
 	
 	# read options
 	cargs = {}
@@ -303,10 +332,26 @@ def main(args=None):
 			version = a
 		elif o in ('v', 'verbose'):
 			verbose += 1
+		elif o in ('no-gzip'):
+			use_gzip = False
+		elif o in ('c', 'compress-level'):
+			compress_level = a
 			
 	# check options
 	if not output:
 		print >>sys.stderr, "No output specified."
+		return 1
+	try:
+		compress_level = int(compress_level)
+		if compress_level == -1:
+			use_gzip = False
+		elif compress_level > 9:
+			print >>sys.stderr, "Clamping compression level (" + str(compress_level) + ") to 9"
+			compress_level = 9
+		elif compress_level < -1:
+			raise ValueError
+	except ValueError:
+		print >>sys.stderr, "Invalid compression level:", compress_level
 		return 1
 	if 'user' not in cargs:
 		cargs['user'] = output
@@ -321,9 +366,9 @@ def main(args=None):
 	if verbose:
 		print "Tracing '" + output + "' with version", version, "and args:\n" + repr(cargs)
 	if int(version) == 1:
-		convert_simple(output, **cargs)
+		convert_simple(output, use_gzip=use_gzip, compress=compress_level, **cargs)
 	else:
-		convert(output, **cargs)
+		convert(output, use_gzip=use_gzip, compress=compress_level, **cargs)
 	return 0
 
 if __name__ == '__main__':
