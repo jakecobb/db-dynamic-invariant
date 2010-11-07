@@ -31,15 +31,20 @@ class Field(object):
 		self.ftype = ftype
 		self.nullable = nullable
 		self.is_pkey = is_pkey
-		if is_pkey and nullable:
-			self.nullable = False
-			if _verbose:
-				print >>sys.stderr, "Dropping nullable for PK:", self.fullname()
 		self.rtype, self.to_val, self.cmp = ftype_to_rep_val_comp(ftype)
 		if rtype is not None: 
 			self.rtype = rtype
-		if is_pkey and self.rtype == 'int':
-			self.rtype = 'hashcode'
+		if is_pkey:
+			if self.rtype == 'int':
+				self.rtype = 'hashcode'
+			if nullable:
+				self.nullable = False
+				if _verbose:
+					print >>sys.stderr, "Dropping nullable for PK:", self.fullname()
+		if self.nullable:
+			self.__nullable_name = self._fullname_escaped + '__IS_NULL__'
+			
+				
 	def fullname(self, quoted=False, escaped=False):
 		"""Returns the field name including the table, if known."""
 		if escaped:
@@ -60,21 +65,17 @@ class Field(object):
 		flags = 'non_null' if self.is_pkey else None
 		return var_decl_v2(fullname, self.rtype, dec_type=self.ftype.replace(' ', '_'), array=is_array, flags=flags, comp=self.cmp)
 	def _nullable_name(self, v1=False):
-#		if v1:
-			return self.fullname(escaped=True) + '__IS_NULL__'
-#		return 'NULL(' + self.fullname(escaped=True) + ')' 
+		return self.__nullable_name
 	def null_decl_v1(self):
-		if not self.nullable:
-			return ''
+		if not self.nullable: raise RuntimeWarning, 'field is not nullable'
 		nname = self._nullable_name(v1=True)
 		return '\n'.join((nname, nname, 'hashcode', '8'))
 	def null_trace_v1(self, val):
-		if not self.nullable:
-			return ''
+		if not self.nullable: raise RuntimeWarning, 'field is not nullable'
 		nname = self._nullable_name(v1=True)
 		return '\n'.join((nname, 'null' if val is None else str(id('')), '1')) # FIXME id('')???
 	def null_decl_v2(self):
-		if not self.nullable: return ''
+		if not self.nullable: raise RuntimeWarning, 'field is not nullable'
 		nname = self._nullable_name(v1=False)
 		return var_decl_v2(nname, 'hashcode', dec_type=nname, comp='8')
 
