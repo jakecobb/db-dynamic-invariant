@@ -20,6 +20,14 @@ class Field(object):
 	def __init__(self, name, ftype, rtype=None, table=None, is_pkey=False, nullable=True):
 		self.table = table
 		self.name = name
+		if table:
+			self._fullname = table + '.' + name
+			self._fullname_escaped = self._fullname.replace(' ', '_')
+			self._fullname_quoted  = '`' + table + '`.`' + name + '`'
+		else:
+			self._fullname = name
+			self._fullname_escaped = name.replace(' ', '_')
+			self._fullname_quoted  = '`' + name + '`'
 		self.ftype = ftype
 		self.nullable = nullable
 		self.is_pkey = is_pkey
@@ -34,12 +42,12 @@ class Field(object):
 			self.rtype = 'hashcode'
 	def fullname(self, quoted=False, escaped=False):
 		"""Returns the field name including the table, if known."""
-		p = (self.table, self.name) if self.table else (self.name,)
-		if quoted:
-			p = map(lambda x: "`%s`" % x, p)
 		if escaped:
-			p = map(lambda x: x.replace(' ', '_'), p)
-		return '.'.join(p)
+			if quoted: raise NotImplementedError
+			return self._fullname_escaped
+		if quoted:
+			return self._fullname_quoted
+		return self._fullname
 	def to_decl(self):
 		return self.to_old_decl()
 	def to_old_decl(self):
