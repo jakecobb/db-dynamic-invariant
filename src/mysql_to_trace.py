@@ -88,6 +88,8 @@ class Field(object):
 		if not self.nullable: raise RuntimeWarning, 'field is not nullable'
 		nname = self._nullable_name(v1=False)
 		return var_decl_v2(nname, 'hashcode', dec_type=nname, comp='8')
+	def __repr__(self):
+		return "Field(name=%(name)r, ftype=%(ftype)r, rtype=%(rtype)r, table=%(table)r, is_pkey=%(is_pkey)r, nullable=%(nullable)r)" % self.__dict__
 
 def var_decl_v2(variable, rep_type, dec_type='unspecified', var_kind='variable', flags=None, array=None, comp='1'):
 	data = ['  variable ' + variable, 'var-kind ' + var_kind, 'dec-type ' + dec_type, 'rep-type ' + rep_type]
@@ -213,7 +215,10 @@ def get_table_fields(conn):
 			tfields = []
 			for row in cur:
 				fname, ftype, nullable, keytype = row[:4]
-				tfields.append(Field(fname, ftype, table=table, is_pkey=keytype=='PRI', nullable=nullable))
+				nullable = nullable in ('YES', 'yes')
+				f = Field(fname, ftype, table=table, is_pkey=keytype=='PRI', nullable=nullable)
+				if _verbose: print repr(f)
+				tfields.append(f)
 			fields[table] = tfields
 	finally:
 		cur.close()
