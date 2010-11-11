@@ -6,6 +6,7 @@ import re
 import MySQLdb
 import getopt
 import gzip
+import cPickle as pickle
 from array import array
 from itertools import imap
 
@@ -126,23 +127,32 @@ def to_set_val(val):
 	return '["%s"]' % '" "'.join( x.replace('"', '\\"') for x in val.split(',') )
 
 
-def convert_simple(outfile, use_gzip=True, compress=_DEFAULT_COMPRESS, **conn_args):
+def convert(basename, decls_version=2, decls=True, dtrace=True, use_gzip=True, compress=_DEFAULT_COMPRESS, **conn_args):
+	decls_path  = basename + '.decls'
+	fields_path = basename + '.fields'
+	dtrace_path = basename + '.dtrace'
 	conn = None
 	try:
 		conn = MySQLdb.connect(**conn_args)
-		all_fields = get_table_fields(conn)
-		write_old_decls(all_fields, outfile + '.decls')
-		write_old_trace(conn, all_fields, outfile + '.dtrace', use_gzip=use_gzip, compress=compress)
-	finally:
-		if conn: conn.close()
-
-def convert(outfile, use_gzip=True, compress=_DEFAULT_COMPRESS, **conn_args):
-	conn = None
-	try:
-		conn = MySQLdb.connect(**conn_args)
-		all_fields = get_table_fields(conn)
-		write_decls_v2(all_fields, outfile + '.decls')
-		write_old_trace(conn, all_fields, outfile + '.dtrace', use_gzip=use_gzip, compress=compress) # FIXME v2 trace
+		fields = None
+		
+		if decls:
+			# read metadata, write serialized fields and Daikon .decls file
+			if decls_version == 1:
+				write_decls = write_old_decls
+			elif decls_version == 2:
+				write_decls = write_decls_v2
+			else:
+				raise ValueError, "decls_version must be 1 or 2"
+			fields = get_table_fields(conn, save_to=fields_path)
+			write_decls(fields, decls_path)
+		
+		if dtrace:
+			# write dtrace with fields either from above or previously serialized
+			if fields is None:
+				with open(fields_path, 'rb') as fieldsfile:
+					fields = pickle.load(fieldsfile)
+			write_old_trace(conn, fields, dtrace_path, use_gzip=use_gzip, compress=compress)
 	finally:
 		if conn: conn.close()
 
@@ -185,7 +195,7 @@ def ftype_to_rep_val_comp(ftype):
 		return ('java.lang.String', to_str_val, '1')
 	
 
-def get_table_fields(conn):
+def get_table_fields(conn, save_to=None):
 	tables = get_table_names(conn)
 
 	fields = {} # mapped by table name
@@ -204,6 +214,9 @@ def get_table_fields(conn):
 	finally:
 		cur.close()
 
+	if save_to is not None:
+		with open(save_to, mode='wb') as outfile:
+			pickle.dump(fields, outfile, protocol=pickle.HIGHEST_PROTOCOL)
 	return fields
 
 def write_old_decls(all_fields, outpath):
@@ -277,10 +290,10 @@ def write_decls_v2(all_fields, outpath):
 def main(args=None):
 	if args is None: args = sys.argv[1:]
 	try:
-		opts, args = getopt.gnu_getopt(args, "hH:u:p:P:d:o:V:vc:",
+		opts, args = getopt.gnu_getopt(args, "hH:u:p:P:d:o:V:vc:f:O:",
 			("help", "host=", "user=", "port=", "password=", 
 				"database=", "output=", "version=", "verbose",
-				"no-gzip", "compress-level="))
+				"no-gzip", "compress-level=", "fields-file=", "operation="))
 	except getopt.GetoptError, err:
 		print >>sys.stderr, str(err)
 		return 1
@@ -291,6 +304,7 @@ def main(args=None):
 	verbose = 0
 	use_gzip = True
 	compress_level = _DEFAULT_COMPRESS
+	operation = set(('decls', 'dtrace'))
 	
 	# read options
 	cargs = {}
@@ -314,6 +328,11 @@ def main(args=None):
 			use_gzip = False
 		elif o in ('c', 'compress-level'):
 			compress_level = a
+		elif o in ('O', 'operation'):
+			if ',' in a:
+				operation = set(a.split(','))
+			else:
+				operation = set((a,))
 			
 	# check options
 	if not output:
@@ -343,10 +362,7 @@ def main(args=None):
 	_verbose = verbose
 	if verbose:
 		print "Tracing '" + output + "' with version", version, "and args:\n" + repr(cargs)
-	if int(version) == 1:
-		convert_simple(output, use_gzip=use_gzip, compress=compress_level, **cargs)
-	else:
-		convert(output, use_gzip=use_gzip, compress=compress_level, **cargs)
+	convert(output, decls_version=int(version), decls='decls' in operation, dtrace='dtrace' in operation, use_gzip=use_gzip, compress=compress_level, **cargs)
 	return 0
 
 if __name__ == '__main__':
