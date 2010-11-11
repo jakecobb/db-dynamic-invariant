@@ -12,11 +12,6 @@ from itertools import imap
 _verbose = 0
 _DEFAULT_COMPRESS = 3
 
-_DEFAULT_ARGS = {'host': 'localhost', 'db': 'world', 'user': 'world'}
-def get_conn_args(**args):
-	"""Returns the given connection arguments with defaults for any not given."""
-	return dict(_DEFAULT_ARGS).update(args)
-
 class GzipFile(gzip.GzipFile):
 	def __enter__(self):
 		if self.fileobj is None:
@@ -166,23 +161,6 @@ _RE_DBL = re.compile(r'float|decimal|double', re.IGNORECASE)
 _RE_BIN = re.compile(r'blob', re.IGNORECASE)
 _RE_SET = re.compile(r'set', re.IGNORECASE)
 _RE_TIME = re.compile(r'datetime|timestamp', re.IGNORECASE)
-def ftype_to_rep(ftype):
-	raise DeprecationWarning
-	pindex = ftype.find('(')
-	base_type = ftype if pindex == -1 else ftype[:pindex]
-	
-	if _RE_STR.match(base_type):
-		return 'java.lang.String'
-	elif _RE_INT.match(base_type):
-		return 'int'
-	elif _RE_DBL.match(base_type):
-		return 'double'
-	elif _RE_BIN.match(base_type):
-		return 'int[]'
-	else:
-		print >>sys.stderr, "Warn: Unhandled base type:", base_type
-		return 'java.lang.String'
-	
 def ftype_to_rep_val_comp(ftype):
 	pindex = ftype.find('(')
 	base_type = ftype if pindex == -1 else ftype[:pindex]
@@ -235,11 +213,6 @@ def write_old_decls(all_fields, outpath):
 					out.write('%s\n' % field.null_decl_v1())
 				out.write('%s\n' % field.to_old_decl())
 			out.write('\n')
-
-def nullable_decl_v1(field):
-	raise DeprecationWarning
-	fname = field.fullname(escaped=True)
-	return '\n'.join('NULL(' + fname + ')', fname + ' IS NULL', 'hashcode', '8')
 
 def write_old_trace(conn, all_fields, outpath, use_gzip=True, compress=_DEFAULT_COMPRESS):
 	"""Writes a data trace of the current database state"""
@@ -297,9 +270,6 @@ def write_decls_v2(all_fields, outpath):
 					out.write(field.null_decl_v2())
 				out.write(field.to_decl_v2())
 			out.write('\n')
-
-def process_world(declpath='world.decls', dtracepath='world.dtrace'):
-	convert_simple('world', **_DEFAULT_ARGS)
 
 def main(args=None):
 	if args is None: args = sys.argv[1:]
