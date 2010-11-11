@@ -161,6 +161,7 @@ _RE_DBL = re.compile(r'float|decimal|double', re.IGNORECASE)
 _RE_BIN = re.compile(r'blob', re.IGNORECASE)
 _RE_SET = re.compile(r'set', re.IGNORECASE)
 _RE_TIME = re.compile(r'datetime|timestamp', re.IGNORECASE)
+_RE_DATE = re.compile(r'date', re.IGNORECASE)
 def ftype_to_rep_val_comp(ftype):
 	pindex = ftype.find('(')
 	base_type = ftype if pindex == -1 else ftype[:pindex]
@@ -177,6 +178,8 @@ def ftype_to_rep_val_comp(ftype):
 		return ('java.lang.String[]', to_set_val, '5[1]')
 	elif _RE_TIME.match(base_type):
 		return ('java.lang.String', to_str_val, '6')
+	elif _RE_DATE.match(base_type):
+		return ('java.lang.String', to_str_val, '7')
 	else:
 		print >>sys.stderr, "Warn: Unhandled base type:", base_type
 		return ('java.lang.String', to_str_val, '1')
