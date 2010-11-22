@@ -127,7 +127,7 @@ def to_set_val(val):
 	return '["%s"]' % '" "'.join( x.replace('"', '\\"') for x in val.split(',') )
 
 
-def convert(basename, decls_version=2, decls=True, dtrace=True, use_gzip=True, compress=_DEFAULT_COMPRESS, append=False, **conn_args):
+def convert(basename, decls_version=2, decls=True, dtrace=True, use_gzip=True, compress=_DEFAULT_COMPRESS, append=False, tables=None, **conn_args):
 	decls_path  = basename + '.decls'
 	fields_path = basename + '.fields'
 	dtrace_path = basename + '.dtrace'
@@ -152,7 +152,7 @@ def convert(basename, decls_version=2, decls=True, dtrace=True, use_gzip=True, c
 			if fields is None:
 				with open(fields_path, 'rb') as fieldsfile:
 					fields = pickle.load(fieldsfile)
-			write_old_trace(conn, fields, dtrace_path, use_gzip=use_gzip, compress=compress, append=append)
+			write_old_trace(conn, fields, dtrace_path, use_gzip=use_gzip, compress=compress, append=append, tables=tables)
 	finally:
 		if conn: conn.close()
 
@@ -230,7 +230,7 @@ def write_old_decls(all_fields, outpath):
 				out.write('%s\n' % field.to_old_decl())
 			out.write('\n')
 
-def write_old_trace(conn, all_fields, outpath, use_gzip=True, compress=_DEFAULT_COMPRESS, append=False):
+def write_old_trace(conn, all_fields, outpath, use_gzip=True, compress=_DEFAULT_COMPRESS, append=False, tables=None):
 	"""Writes a data trace of the current database state"""
 	if not use_gzip:
 		out = open(outpath, 'a' if append else 'w')
@@ -238,6 +238,9 @@ def write_old_trace(conn, all_fields, outpath, use_gzip=True, compress=_DEFAULT_
 		if not outpath.endswith('.gz'): 
 			outpath += '.gz'
 		out = GzipFile(outpath, 'ab' if append else 'wb', compress)
+		
+	if tables is not None and not isinstance(tables, set):
+		tables = set(tables)
 	
 	# write the trace file
 	with out:
@@ -250,6 +253,9 @@ def write_old_trace(conn, all_fields, outpath, use_gzip=True, compress=_DEFAULT_
 		cur = conn.cursor()
 		try:
 			for table, fields in all_fields.iteritems():
+				if tables and table not in tables: 
+					continue
+
 				tbl_point = '\n%s:::POINT\n' % table
 				q = 'SELECT ' + ', '.join( f.fullname(quoted=True) for f in fields ) + \
 					' FROM `' + table + '`'
@@ -290,10 +296,10 @@ def write_decls_v2(all_fields, outpath):
 def main(args=None):
 	if args is None: args = sys.argv[1:]
 	try:
-		opts, args = getopt.gnu_getopt(args, "hH:u:p:P:d:o:V:vc:f:O:a",
+		opts, args = getopt.gnu_getopt(args, "hH:u:p:P:d:o:V:vc:f:O:at:",
 			("help", "host=", "user=", "password=", "port=", "database=", 
 			 "output=", "version=", "verbose", "no-gzip", "compress-level=", 
-			 "fields-file=", "operation=", "append"))
+			 "fields-file=", "operation=", "append", "tables="))
 	except getopt.GetoptError, err:
 		print >>sys.stderr, str(err)
 		return 1
@@ -304,6 +310,7 @@ def main(args=None):
 	verbose = 0
 	use_gzip = True
 	append = False
+	tables = None
 	compress_level = _DEFAULT_COMPRESS
 	operation = set(('decls', 'dtrace'))
 	
@@ -338,6 +345,8 @@ def main(args=None):
 				operation = set((a,))
 		elif o in ('a', 'append'):
 			append = True
+		elif o in ('t', 'tables'):
+			tables = set(a.split(','))
 			
 	# check options
 	if not output:
@@ -368,7 +377,7 @@ def main(args=None):
 	if verbose:
 		print "Tracing '" + output + "' with version", version, "and args:\n" + repr(cargs)
 	convert(output, decls_version=int(version), decls='decls' in operation, dtrace='dtrace' in operation, \
-			use_gzip=use_gzip, compress=compress_level, append=append, **cargs)
+			use_gzip=use_gzip, compress=compress_level, append=append, tables=tables, **cargs)
 	return 0
 
 if __name__ == '__main__':
