@@ -5,13 +5,13 @@ Created on Nov 21, 2010
 @author: jake
 '''
 from __future__ import with_statement
+import cPickle as pickle
+import mysql_to_trace as mtrace
+import os
 import sqlalchemy
 import sqlalchemy.engine.base
 import sqlalchemy.ext.serializer as sqlserializer
 import sys
-import mysql_to_trace as mtrace
-import cPickle as pickle
-import os
 
 _engine = None
 
@@ -54,6 +54,7 @@ class Tracer(object):
 			if not skip_save: _writeobj(self.meta, ser_path, alchemy=True)
 		except IOError, e:
 			print >>sys.stderr, "Failed to save metadata, path=%s, err=%s" % (ser_path, e.strerror)
+	
 	def load_fields(self, force_fresh=False, skip_save=False):
 		"""Loads the field data.  
 		
@@ -77,6 +78,7 @@ class Tracer(object):
 			if not skip_save: _writeobj(self.fields, ser_path)
 		except IOError, e:
 			print >>sys.stderr, "Failed to save field data, path=%s, err=%s" % (ser_path, e.strerror)
+
 	def write_decls(self, overwrite=True, v1=False):
 		"""Writes field data as a Daikon declarations file in the 2.0 format.
 		
@@ -91,15 +93,62 @@ class Tracer(object):
 		if overwrite or not os.path.isfile(decls_path):
 			write = mtrace.write_decls_v2 if not v1 else mtrace.write_old_decls
 			write(self.fields, decls_path)
-	def write_trace(self):
+
+	def write_trace(self, tables=None):
+		"""Writes the current DB state as a Daikon trace file.
+		
+		@param tables: a sequence of table names to trace instead of all tables
+		"""
+		if not self.fields:
+			self.load_fields()
 		self._check_datadir()
+		
+		if not isinstance(tables, (set, type(None))):
+			tables = set(tables)
+		
 		mode = 'a' if self.append_trace else 'w'
 		trace_path = os.path.join(self.datadir, self.dbname + '.dtrace')
 		if self.use_gzip:
 			mode += 'b'
 			trace_path += '.gz'
-		
-		raise NotImplementedError('FIXME: Not finished yet.')
+			out = mtrace.GzipFile(trace_path, mode, self.compress_level)
+		else:
+			out = open(trace_path, mode)
+			
+		with out:
+			# build string pieces in a buffer to write once per db row
+			# saves a lot of time, especially with gzip on
+			buf = []
+			write = buf.append
+			def mwrite(*args): buf.extend(args)
+			
+			conn = self.engine.connect()
+			try:
+				for table, fields in self.fields.iteritems():
+					if tables and table not in tables: 
+						continue
+	
+					tbl_point = '\n%s:::POINT\n' % table
+					dbtable = self.meta.tables[table]
+					result = conn.execute(dbtable.select())
+					try:
+						for row in result:
+							write(tbl_point)
+							for i, field in enumerate(fields):
+								val = row[i]
+								if field.nullable:
+									write(field.null_trace_v1(val))
+									write('\n')
+								fval = str(field.to_val(val))
+								fmod = '1' if fval != 'nonsensical' else '2' 
+								mwrite(field.fullname(escaped=True), '\n', fval, '\n', fmod, '\n')
+							out.write(''.join(buf))
+							del buf[:]
+					finally:
+						result.close()
+			finally:
+				conn.close()
+
 		
 def reflected_tables(engine):
 	"""Reflects a set of database tables
@@ -139,8 +188,9 @@ def get_trace_fields(engine_or_meta=None, save_to=None):
 	
 	fields = {} # mapped by table name
 	for table in meta.tables.itervalues():
-		fields[table.name] = [
-			mtrace.Field(col.name, col.type.get_col_spec(), table=table.name, is_pkey=col.primary_key, nullable=col.nullable) 
+		# various str(...) calls are to avoid unicode strings
+		fields[str(table.name)] = [
+			mtrace.Field(str(col.name), col.type.get_col_spec(), table=str(table.name), is_pkey=col.primary_key, nullable=col.nullable) 
 			for col in table.columns
 		]
 
@@ -168,12 +218,14 @@ def _writeobj(obj, path, alchemy=False):
 
 def main(args=None):
 	args = args or sys.argv[1:]
-	url = args[0] if args else 'mysql://world@localhost/world'
+	base = args[1] if len(args) >= 2 else 'world'
+	url = args[0] if args else 'mysql://' + base + '@localhost/' + base
 		
 	engine = sqlalchemy.create_engine(url)
-	tracer = Tracer('world', engine=engine)
+	tracer = Tracer(base, engine=engine)
 	tracer.load_fields(force_fresh=True)
 	tracer.write_decls()
+	tracer.write_trace()
 
 if __name__ == '__main__':
 	main()
