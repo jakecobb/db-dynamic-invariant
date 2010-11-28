@@ -99,11 +99,22 @@ def to_val(val):
 		return 'nonsensical' # FIXME is nonsensical the same as null?
 	return val
 
-def to_str_val(val):
+RE_STR_ESCAPE = re.compile(r'^|[\r\n\t\b"]|$')
+_escapes = {'\r': '\\r', '\n': '\\n', '\t': '\\t', '\b': '\\b', '"': '\\"'}
+def __str_escape(matcher, escapes=_escapes):
+	val = matcher.group(0)
+	if val:
+		return escapes[val[0]]
+	return '"'
+def to_str_val(val, pattern=RE_STR_ESCAPE):
 	if val is None:
 		return 'null'
-	return '"%s"' % str(val).replace('"', '\\"')
+	return pattern.sub(__str_escape, str(val))
 
+def to_bit_val(val):
+	if val is None:
+		return 'nonsensical'
+	return ord(val)
 
 if array('b').itemsize == 1:
 	def __to_bin_str(val):
@@ -167,6 +178,7 @@ def get_table_names(conn):
 
 _RE_STR = re.compile(r'enum|(var)?char|(big|small|medium)?text', re.IGNORECASE)
 _RE_INT = re.compile(r'(big|small|medium|tiny)?int(eger)?', re.IGNORECASE)
+_RE_BIT = re.compile(r'bit', re.IGNORECASE)
 _RE_DBL = re.compile(r'float|decimal|double', re.IGNORECASE)
 _RE_BIN = re.compile(r'(big|medium|small)?blob', re.IGNORECASE)
 _RE_SET = re.compile(r'set', re.IGNORECASE)
@@ -180,6 +192,8 @@ def ftype_to_rep_val_comp(ftype):
 		return ('java.lang.String', to_str_val, '1')
 	elif _RE_INT.match(base_type):
 		return ('int', to_val, '2')
+	elif _RE_BIT.match(base_type):
+		return ('int', to_bit_val, '2')
 	elif _RE_DBL.match(base_type):
 		return ('double', to_val, '3')
 	elif _RE_BIN.match(base_type):
