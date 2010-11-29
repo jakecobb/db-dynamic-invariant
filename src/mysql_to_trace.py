@@ -99,17 +99,16 @@ def to_val(val):
 		return 'nonsensical' # FIXME is nonsensical the same as null?
 	return val
 
-RE_STR_ESCAPE = re.compile(r'^|[\r\n\t\b"]|$')
+RE_STR_ESCAPE = re.compile(r'[\r\n\t\b"]')
 _escapes = {'\r': '\\r', '\n': '\\n', '\t': '\\t', '\b': '\\b', '"': '\\"'}
 def __str_escape(matcher, escapes=_escapes):
 	val = matcher.group(0)
-	if val:
-		return escapes[val[0]]
-	return '"'
+	return escapes.get(val, val)
+
 def to_str_val(val, pattern=RE_STR_ESCAPE):
 	if val is None:
 		return 'null'
-	return pattern.sub(__str_escape, str(val))
+	return '"' + pattern.sub(__str_escape, str(val)) + '"'
 
 def to_bit_val(val):
 	if val is None:
