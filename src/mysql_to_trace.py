@@ -99,16 +99,21 @@ def to_val(val):
 		return 'nonsensical' # FIXME is nonsensical the same as null?
 	return val
 
-RE_STR_ESCAPE = re.compile(r'[\r\n\t\b"]')
-_escapes = {'\r': '\\r', '\n': '\\n', '\t': '\\t', '\b': '\\b', '"': '\\"'}
-def __str_escape(matcher, escapes=_escapes):
-	val = matcher.group(0)
-	return escapes.get(val, val)
+try:
+	from valconv import to_str_val
+	print "Using valconv.to_str_val..."
+except:
+	print "Using Python version of to_str_val..."
+	RE_STR_ESCAPE = re.compile(r'[\r\n\t\b"]')
+	_escapes = {'\r': '\\r', '\n': '\\n', '\t': '\\t', '\b': '\\b', '"': '\\"'}
+	def __str_escape(matcher, escapes=_escapes):
+		val = matcher.group(0)
+		return escapes.get(val, val)
 
-def to_str_val(val, pattern=RE_STR_ESCAPE):
-	if val is None:
-		return 'null'
-	return '"' + pattern.sub(__str_escape, str(val)) + '"'
+	def to_str_val(val, pattern=RE_STR_ESCAPE):
+		if val is None:
+			return 'null'
+		return '"' + pattern.sub(__str_escape, str(val)) + '"'
 
 def to_bit_val(val):
 	if val is None:
